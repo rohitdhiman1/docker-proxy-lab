@@ -1,0 +1,23 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# VSCode
+.vscode/
+
+# JetBrains IDEs (IntelliJ, PyCharm, etc.)
+.idea/
+
+# macOS system files
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+
+# Thumbnails
+._*
+
+# Other common system files
+Thumbs.db
+Desktop.ini
