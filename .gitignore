@@ -21,3 +21,22 @@ Icon?
 # Other common system files
 Thumbs.db
 Desktop.ini
+
+# Generated SSL certificates
+certs/*.crt
+certs/*.key
+!certs/generate-certs.sh
+!certs/.htpasswd
+
+# Docker volumes and logs
+squid-cache/
+squid-logs/
+nginx-logs/
+prometheus-data/
+grafana-data/
+elasticsearch-data/
+
+# Environment files
+.env
+.env.local
+
