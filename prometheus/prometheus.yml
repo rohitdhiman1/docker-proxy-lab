@@ -1,0 +1,25 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Nginx reverse proxy metrics
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['nginx-exporter:9113']
+        labels:
+          service: 'reverse-proxy'
+  
+  # Backend servers metrics
+  - job_name: 'backends'
+    static_configs:
+      - targets: 
+        - 'backend1:80'
+        - 'backend2:80'
+        - 'backend3:80'
+        - 'backend4:80'
+  
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
