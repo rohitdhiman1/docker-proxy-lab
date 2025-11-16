@@ -15,8 +15,9 @@ This comprehensive lab provides hands-on experience with **forward proxy**, **re
 7. [Lab 4: Advanced Proxy Features](#lab-4-advanced-proxy-features)
 8. [Lab 5: Monitoring with Prometheus & Grafana](#lab-5-monitoring-with-prometheus--grafana)
 9. [Lab 6: Centralized Logging with ELK Stack](#lab-6-centralized-logging-with-elk-stack)
-10. [Troubleshooting](#troubleshooting)
-11. [Cleanup](#cleanup)
+10. [Lab 7: Microservices Architecture](#lab-7-microservices-architecture)
+11. [Troubleshooting](#troubleshooting)
+12. [Cleanup](#cleanup)
 
 ---
 
@@ -27,6 +28,8 @@ This comprehensive lab provides hands-on experience with **forward proxy**, **re
 - **Forward Proxy**: Squid proxy with ACLs and caching
 - **Reverse Proxy**: Nginx with SSL/TLS, load balancing, and rate limiting
 - **Backend Servers**: 4 nginx servers for load balancing demonstration
+- **Microservices**: User Service (Flask), Product Service (Express), Order Service (Go)
+- **Database & Cache**: PostgreSQL and Redis
 - **Monitoring**: Prometheus + Grafana + Nginx Exporter
 - **Logging**: ELK Stack (Elasticsearch, Logstash, Kibana)
 
@@ -35,6 +38,7 @@ This comprehensive lab provides hands-on experience with **forward proxy**, **re
 ```
 Client → Squid Proxy → Internet (Forward Proxy)
 Client → Nginx (HTTPS) → Backend Servers (Reverse Proxy)
+Client → Nginx (HTTPS) → Microservices → PostgreSQL/Redis
 All services → Prometheus → Grafana (Monitoring)
 All services → Logstash → Elasticsearch → Kibana (Logging)
 ```
@@ -659,6 +663,12 @@ Click on any log entry to see:
 │   └── index.html             # Backend 3 content
 ├── backend4/
 │   └── index.html             # Backend 4 content
+├── services/
+│   ├── user-service/          # Python/Flask microservice
+│   ├── product-service/       # Node.js/Express microservice
+│   └── order-service/         # Go microservice
+├── database/
+│   └── init.sql               # Database schema and seed data
 ├── prometheus/
 │   └── prometheus.yml         # Prometheus configuration
 ├── grafana/
@@ -666,6 +676,49 @@ Click on any log entry to see:
 └── logstash/
     └── logstash.conf          # Logstash pipeline
 ```
+
+---
+
+## Lab 7: Microservices Architecture
+
+This lab demonstrates a real-world microservices architecture with three services backed by PostgreSQL and Redis, all accessed through Nginx reverse proxy.
+
+### Overview
+
+- **User Service** (Python/Flask): User management on port 5000
+- **Product Service** (Node.js/Express): Product catalog on port 3000
+- **Order Service** (Go): Order processing on port 8080
+- **PostgreSQL**: Relational database with users, products, orders tables
+- **Redis**: Caching layer for performance optimization
+
+### Quick Test
+
+```bash
+# Get all users
+curl -k https://localhost/api/v1/users
+
+# Get all products
+curl -k https://localhost/api/v1/products
+
+# Get all orders
+curl -k https://localhost/api/v1/orders
+
+# Create a new order
+curl -k -X POST https://localhost/api/v1/orders \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": 1,
+    "product_id": 2,
+    "quantity": 2,
+    "total_price": 1998.00
+  }'
+```
+
+### Detailed Documentation
+
+For comprehensive exercises, database interactions, caching strategies, and advanced challenges:
+
+📘 **[See LAB_07_MICROSERVICES.md](./LAB_07_MICROSERVICES.md)**
 
 ---
 
