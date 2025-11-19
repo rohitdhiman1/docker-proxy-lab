@@ -1,18 +1,24 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import psycopg2
+from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 import os
 import redis
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
+from functools import wraps
+import time
 
 app = Flask(__name__)
 CORS(app)
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # Database configuration
@@ -28,22 +34,84 @@ DB_CONFIG = {
 REDIS_HOST = os.getenv('REDIS_HOST', 'redis')
 REDIS_PORT = int(os.getenv('REDIS_PORT', '6379'))
 
-def get_db_connection():
-    """Create database connection"""
+# Initialize connection pools
+db_pool = None
+redis_pool = None
+
+def init_db_pool():
+    """Initialize database connection pool"""
+    global db_pool
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
-        return conn
+        db_pool = psycopg2.pool.SimpleConnectionPool(
+            minconn=1,
+            maxconn=10,
+            **DB_CONFIG
+        )
+        logger.info("Database connection pool created")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to create database pool: {e}")
+        return False
+
+def init_redis_pool():
+    """Initialize Redis connection pool"""
+    global redis_pool
+    try:
+        redis_pool = redis.ConnectionPool(
+            host=REDIS_HOST,
+            port=REDIS_PORT,
+            decode_responses=True,
+            max_connections=10
+        )
+        logger.info("Redis connection pool created")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to create Redis pool: {e}")
+        return False
+
+def get_db_connection():
+    """Get database connection from pool"""
+    if db_pool is None:
+        if not init_db_pool():
+            return None
+    try:
+        return db_pool.getconn()
     except Exception as e:
         logger.error(f"Database connection error: {e}")
         return None
 
+def return_db_connection(conn):
+    """Return database connection to pool"""
+    if db_pool and conn:
+        db_pool.putconn(conn)
+
 def get_redis_connection():
-    """Create Redis connection"""
+    """Get Redis connection from pool"""
+    if redis_pool is None:
+        if not init_redis_pool():
+            return None
     try:
-        return redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+        return redis.Redis(connection_pool=redis_pool)
     except Exception as e:
         logger.error(f"Redis connection error: {e}")
         return None
+
+def retry_on_failure(retries=3, delay=1):
+    """Decorator to retry operations on failure"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            for attempt in range(retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    if attempt == retries - 1:
+                        raise
+                    logger.warning(f"Attempt {attempt + 1} failed: {e}. Retrying...")
+                    time.sleep(delay)
+            return None
+        return wrapper
+    return decorator
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -51,14 +119,22 @@ def health():
     health_status = {
         'service': 'user-service',
         'status': 'healthy',
-        'timestamp': datetime.utcnow().isoformat()
+        'timestamp': datetime.now(timezone.utc).isoformat()
     }
     
     # Check database
     conn = get_db_connection()
     if conn:
-        health_status['database'] = 'connected'
-        conn.close()
+        try:
+            with conn.cursor() as cur:
+                cur.execute('SELECT 1')
+            health_status['database'] = 'connected'
+        except Exception as e:
+            logger.warning(f"Database health check failed: {e}")
+            health_status['database'] = 'disconnected'
+            health_status['status'] = 'unhealthy'
+        finally:
+            return_db_connection(conn)
     else:
         health_status['database'] = 'disconnected'
         health_status['status'] = 'unhealthy'
@@ -69,7 +145,8 @@ def health():
         try:
             r.ping()
             health_status['redis'] = 'connected'
-        except:
+        except redis.RedisError as e:
+            logger.warning(f"Redis health check failed: {e}")
             health_status['redis'] = 'disconnected'
     else:
         health_status['redis'] = 'disconnected'
@@ -78,18 +155,28 @@ def health():
     return jsonify(health_status), status_code
 
 @app.route('/api/v1/users', methods=['GET'])
+@retry_on_failure(retries=2, delay=0.5)
 def get_users():
-    """Get all users"""
+    """Get all users with pagination"""
+    # Get pagination parameters
+    page = request.args.get('page', 1, type=int)
+    per_page = min(request.args.get('per_page', 50, type=int), 100)  # Max 100
+    offset = (page - 1) * per_page
+    
     # Try cache first
+    cache_key = f'users:page:{page}:per_page:{per_page}'
     r = get_redis_connection()
     if r:
-        cached_users = r.get('users:all')
-        if cached_users:
-            logger.info("Cache hit for users")
-            return jsonify({
-                'users': json.loads(cached_users),
-                'source': 'cache'
-            })
+        try:
+            cached_users = r.get(cache_key)
+            if cached_users:
+                logger.info(f"Cache hit for users page {page}")
+                return jsonify({
+                    **json.loads(cached_users),
+                    'source': 'cache'
+                })
+        except redis.RedisError as e:
+            logger.warning(f"Redis error: {e}")
     
     # Fetch from database
     conn = get_db_connection()
@@ -98,44 +185,75 @@ def get_users():
     
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute('SELECT id, username, email, created_at FROM users ORDER BY id')
+            # Get total count
+            cur.execute('SELECT COUNT(*) as total FROM users')
+            total = cur.fetchone()['total']
+            
+            # Get paginated results
+            cur.execute(
+                'SELECT id, username, email, created_at FROM users ORDER BY id LIMIT %s OFFSET %s',
+                (per_page, offset)
+            )
             users = cur.fetchall()
             
-            # Convert datetime to string
+            # Convert datetime to string with timezone
             for user in users:
-                user['created_at'] = user['created_at'].isoformat() if user['created_at'] else None
+                if user['created_at']:
+                    user['created_at'] = user['created_at'].replace(tzinfo=timezone.utc).isoformat()
+            
+            response_data = {
+                'users': users,
+                'pagination': {
+                    'page': page,
+                    'per_page': per_page,
+                    'total': total,
+                    'pages': (total + per_page - 1) // per_page
+                },
+                'source': 'database',
+                'count': len(users)
+            }
             
             # Cache the result
             if r:
-                r.setex('users:all', 60, json.dumps(users))  # Cache for 60 seconds
-                logger.info("Cached users data")
+                try:
+                    r.setex(cache_key, 60, json.dumps(response_data))  # Cache for 60 seconds
+                    logger.info(f"Cached users page {page}")
+                except redis.RedisError as e:
+                    logger.warning(f"Redis caching error: {e}")
             
-            return jsonify({
-                'users': users,
-                'source': 'database',
-                'count': len(users)
-            })
+            return jsonify(response_data)
+    except psycopg2.Error as e:
+        logger.error(f"Database error fetching users: {e}")
+        return jsonify({'error': 'Database query failed'}), 500
     except Exception as e:
-        logger.error(f"Error fetching users: {e}")
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Unexpected error fetching users: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
     finally:
-        conn.close()
+        return_db_connection(conn)
 
 @app.route('/api/v1/users/<int:user_id>', methods=['GET'])
+@retry_on_failure(retries=2, delay=0.5)
 def get_user(user_id):
     """Get user by ID"""
+    # Validate user_id
+    if user_id <= 0:
+        return jsonify({'error': 'Invalid user ID'}), 400
+    
     # Try cache first
     r = get_redis_connection()
     cache_key = f'user:{user_id}'
     
     if r:
-        cached_user = r.get(cache_key)
-        if cached_user:
-            logger.info(f"Cache hit for user {user_id}")
-            return jsonify({
-                'user': json.loads(cached_user),
-                'source': 'cache'
-            })
+        try:
+            cached_user = r.get(cache_key)
+            if cached_user:
+                logger.info(f"Cache hit for user {user_id}")
+                return jsonify({
+                    'user': json.loads(cached_user),
+                    'source': 'cache'
+                })
+        except redis.RedisError as e:
+            logger.warning(f"Redis error: {e}")
     
     # Fetch from database
     conn = get_db_connection()
@@ -144,37 +262,61 @@ def get_user(user_id):
     
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute('SELECT id, username, email, created_at FROM users WHERE id = %s', (user_id,))
+            cur.execute(
+                'SELECT id, username, email, created_at FROM users WHERE id = %s',
+                (user_id,)
+            )
             user = cur.fetchone()
             
             if not user:
                 return jsonify({'error': 'User not found'}), 404
             
-            # Convert datetime to string
-            user['created_at'] = user['created_at'].isoformat() if user['created_at'] else None
+            # Convert datetime to string with timezone
+            if user['created_at']:
+                user['created_at'] = user['created_at'].replace(tzinfo=timezone.utc).isoformat()
             
             # Cache the result
             if r:
-                r.setex(cache_key, 300, json.dumps(user))  # Cache for 5 minutes
-                logger.info(f"Cached user {user_id} data")
+                try:
+                    r.setex(cache_key, 300, json.dumps(user))  # Cache for 5 minutes
+                    logger.info(f"Cached user {user_id} data")
+                except redis.RedisError as e:
+                    logger.warning(f"Redis caching error: {e}")
             
             return jsonify({
                 'user': user,
                 'source': 'database'
             })
+    except psycopg2.Error as e:
+        logger.error(f"Database error fetching user {user_id}: {e}")
+        return jsonify({'error': 'Database query failed'}), 500
     except Exception as e:
-        logger.error(f"Error fetching user {user_id}: {e}")
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Unexpected error fetching user {user_id}: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
     finally:
-        conn.close()
+        return_db_connection(conn)
 
 @app.route('/api/v1/users', methods=['POST'])
 def create_user():
     """Create a new user"""
     data = request.get_json()
     
-    if not data or 'username' not in data or 'email' not in data:
+    # Validate input
+    if not data:
+        return jsonify({'error': 'Request body is required'}), 400
+    
+    username = data.get('username', '').strip()
+    email = data.get('email', '').strip()
+    
+    if not username or not email:
         return jsonify({'error': 'Username and email are required'}), 400
+    
+    # Basic validation
+    if len(username) < 3 or len(username) > 50:
+        return jsonify({'error': 'Username must be between 3 and 50 characters'}), 400
+    
+    if '@' not in email or len(email) > 255:
+        return jsonify({'error': 'Invalid email format'}), 400
     
     conn = get_db_connection()
     if not conn:
@@ -184,34 +326,45 @@ def create_user():
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 'INSERT INTO users (username, email) VALUES (%s, %s) RETURNING id, username, email, created_at',
-                (data['username'], data['email'])
+                (username, email)
             )
             user = cur.fetchone()
             conn.commit()
             
-            # Convert datetime to string
-            user['created_at'] = user['created_at'].isoformat() if user['created_at'] else None
+            # Convert datetime to string with timezone
+            if user['created_at']:
+                user['created_at'] = user['created_at'].replace(tzinfo=timezone.utc).isoformat()
             
-            # Invalidate cache
+            # Invalidate all users cache (all pages)
             r = get_redis_connection()
             if r:
-                r.delete('users:all')
-                logger.info("Invalidated users cache")
+                try:
+                    # Delete all cached pages
+                    for key in r.scan_iter('users:page:*'):
+                        r.delete(key)
+                    logger.info("Invalidated users cache")
+                except redis.RedisError as e:
+                    logger.warning(f"Cache invalidation error: {e}")
             
-            logger.info(f"Created user: {user['username']}")
+            logger.info(f"Created user: {username} (ID: {user['id']})")
             return jsonify({
                 'user': user,
                 'message': 'User created successfully'
             }), 201
-    except psycopg2.IntegrityError:
+    except psycopg2.IntegrityError as e:
         conn.rollback()
+        logger.warning(f"Integrity error creating user: {e}")
         return jsonify({'error': 'Username or email already exists'}), 409
+    except psycopg2.Error as e:
+        conn.rollback()
+        logger.error(f"Database error creating user: {e}")
+        return jsonify({'error': 'Database operation failed'}), 500
     except Exception as e:
         conn.rollback()
-        logger.error(f"Error creating user: {e}")
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Unexpected error creating user: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
     finally:
-        conn.close()
+        return_db_connection(conn)
 
 @app.route('/api/v1/stats', methods=['GET'])
 def get_stats():
@@ -228,13 +381,16 @@ def get_stats():
             return jsonify({
                 'service': 'user-service',
                 'total_users': result['total_users'],
-                'timestamp': datetime.utcnow().isoformat()
+                'timestamp': datetime.now(timezone.utc).isoformat()
             })
+    except psycopg2.Error as e:
+        logger.error(f"Database error fetching stats: {e}")
+        return jsonify({'error': 'Database query failed'}), 500
     except Exception as e:
-        logger.error(f"Error fetching stats: {e}")
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Unexpected error fetching stats: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
     finally:
-        conn.close()
+        return_db_connection(conn)
 
 @app.route('/', methods=['GET'])
 def index():
@@ -251,4 +407,10 @@ def index():
     })
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # Initialize connection pools at startup
+    init_db_pool()
+    init_redis_pool()
+    
+    # Use production-safe settings
+    debug_mode = os.getenv('FLASK_ENV', 'production') == 'development'
+    app.run(host='0.0.0.0', port=5000, debug=debug_mode)
