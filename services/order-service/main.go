@@ -17,6 +17,14 @@ import (
 	"github.com/gorilla/mux"
 	_ "github.com/lib/pq"
 	"github.com/rs/cors"
+
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gorilla/mux/otelmux"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/jaeger"
+	"go.opentelemetry.io/otel/sdk/resource"
+	tracesdk "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.17.0"
 )
 
 var (
@@ -48,6 +56,37 @@ type Stats struct {
 	TotalOrders  int       `json:"total_orders"`
 	TotalRevenue float64   `json:"total_revenue"`
 	Timestamp    time.Time `json:"timestamp"`
+}
+
+// initTracer initializes OpenTelemetry tracing with Jaeger
+func initTracer() (*tracesdk.TracerProvider, error) {
+	jaegerHost := getEnv("JAEGER_HOST", "jaeger")
+	jaegerPort := getEnv("JAEGER_PORT", "14268")
+
+	// Create Jaeger exporter
+	exp, err := jaeger.New(jaeger.WithCollectorEndpoint(
+		jaeger.WithEndpoint(fmt.Sprintf("http://%s:%s/api/traces", jaegerHost, jaegerPort)),
+	))
+	if err != nil {
+		return nil, err
+	}
+
+	// Create tracer provider
+	tp := tracesdk.NewTracerProvider(
+		tracesdk.WithBatcher(exp),
+		tracesdk.WithResource(resource.NewWithAttributes(
+			semconv.SchemaURL,
+			semconv.ServiceName("order-service"),
+			semconv.ServiceVersion("1.0.0"),
+			attribute.String("environment", getEnv("ENVIRONMENT", "development")),
+		)),
+	)
+
+	// Set global tracer provider
+	otel.SetTracerProvider(tp)
+
+	log.Printf("Tracing initialized with Jaeger at %s:%s", jaegerHost, jaegerPort)
+	return tp, nil
 }
 
 func initDB() error {
@@ -365,6 +404,18 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	// Initialize tracing
+	tp, err := initTracer()
+	if err != nil {
+		log.Printf("Warning: Failed to initialize tracing: %v", err)
+	} else {
+		defer func() {
+			if err := tp.Shutdown(context.Background()); err != nil {
+				log.Printf("Error shutting down tracer provider: %v", err)
+			}
+		}()
+	}
+
 	// Initialize database
 	if err := initDB(); err != nil {
 		log.Fatal("Failed to connect to database:", err)
@@ -377,6 +428,9 @@ func main() {
 
 	// Create router
 	router := mux.NewRouter()
+
+	// Add OpenTelemetry middleware
+	router.Use(otelmux.Middleware("order-service"))
 
 	// Routes
 	router.HandleFunc("/", rootHandler).Methods("GET")
