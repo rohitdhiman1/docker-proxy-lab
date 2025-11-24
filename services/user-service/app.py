@@ -11,8 +11,53 @@ import logging
 from functools import wraps
 import time
 
+# OpenTelemetry imports
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.jaeger.thrift import JaegerExporter
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.instrumentation.flask import FlaskInstrumentor
+from opentelemetry.instrumentation.psycopg2 import Psycopg2Instrumentor
+from opentelemetry.instrumentation.redis import RedisInstrumentor
+
+# Initialize tracing
+def init_tracing():
+    """Initialize OpenTelemetry tracing with Jaeger"""
+    jaeger_host = os.getenv('JAEGER_HOST', 'jaeger')
+    jaeger_port = int(os.getenv('JAEGER_PORT', '6831'))
+    
+    resource = Resource.create({
+        "service.name": "user-service",
+        "service.version": "1.0.0",
+        "deployment.environment": os.getenv('ENVIRONMENT', 'development')
+    })
+    
+    provider = TracerProvider(resource=resource)
+    
+    jaeger_exporter = JaegerExporter(
+        agent_host_name=jaeger_host,
+        agent_port=jaeger_port,
+    )
+    
+    provider.add_span_processor(BatchSpanProcessor(jaeger_exporter))
+    trace.set_tracer_provider(provider)
+    
+    # Auto-instrument libraries
+    FlaskInstrumentor().instrument_app(app)
+    Psycopg2Instrumentor().instrument()
+    RedisInstrumentor().instrument()
+    
+    logger.info(f"Tracing initialized with Jaeger at {jaeger_host}:{jaeger_port}")
+
 app = Flask(__name__)
 CORS(app)
+
+# Initialize tracing
+init_tracing()
+
+# Get tracer for manual spans
+tracer = trace.get_tracer(__name__)
 
 # Configure logging
 logging.basicConfig(
