@@ -246,6 +246,34 @@ services:
       - logging-network
 
   # ========================================
+  # DISTRIBUTED TRACING
+  # ========================================
+  
+  jaeger:
+    image: jaegertracing/all-in-one:1.51
+    container_name: jaeger
+    ports:
+      - "5775:5775/udp"   # Zipkin Thrift compact
+      - "6831:6831/udp"   # Jaeger Thrift compact
+      - "6832:6832/udp"   # Jaeger Thrift binary
+      - "5778:5778"       # Agent config
+      - "16686:16686"     # Jaeger UI
+      - "14268:14268"     # Jaeger Collector HTTP
+      - "14250:14250"     # Jaeger GRPC
+      - "9411:9411"       # Zipkin compatible endpoint
+    environment:
+      - COLLECTOR_ZIPKIN_HOST_PORT=:9411
+      - COLLECTOR_OTLP_ENABLED=true
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:16686"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - monitoring-network
+      - microservices-network
+
+  # ========================================
   # MICROSERVICES
   # ========================================
   
@@ -298,12 +326,17 @@ services:
       DB_PORT: 5432
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      JAEGER_HOST: jaeger
+      JAEGER_PORT: 6831
+      ENVIRONMENT: development
     ports:
       - "5000:5000"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      jaeger:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
@@ -329,12 +362,16 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       PORT: 3000
+      JAEGER_HOST: jaeger
+      ENVIRONMENT: development
     ports:
       - "3001:3000"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      jaeger:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/health"]
@@ -360,12 +397,17 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       PORT: 8080
+      JAEGER_HOST: jaeger
+      JAEGER_PORT: 14268
+      ENVIRONMENT: development
     ports:
       - "8086:8080"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      jaeger:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
