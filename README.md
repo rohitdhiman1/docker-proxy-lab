@@ -16,7 +16,8 @@ This comprehensive lab provides hands-on experience with **forward proxy**, **re
 8. [Lab 5: Monitoring with Prometheus & Grafana](#lab-5-monitoring-with-prometheus--grafana)
 9. [Lab 6: Centralized Logging with ELK Stack](#lab-6-centralized-logging-with-elk-stack)
 10. [Lab 7: Microservices Architecture](#lab-7-microservices-architecture)
-11. [Troubleshooting](#troubleshooting)
+11. [Lab 8: Distributed Tracing with Jaeger](#lab-8-distributed-tracing-with-jaeger)
+12. [Troubleshooting](#troubleshooting)
 12. [Cleanup](#cleanup)
 
 ---
@@ -32,6 +33,7 @@ This comprehensive lab provides hands-on experience with **forward proxy**, **re
 - **Database & Cache**: PostgreSQL and Redis
 - **Monitoring**: Prometheus + Grafana + Nginx Exporter
 - **Logging**: ELK Stack (Elasticsearch, Logstash, Kibana)
+- **Tracing**: Jaeger for distributed tracing across microservices
 
 ### Network Architecture
 
@@ -719,6 +721,51 @@ curl -k -X POST https://localhost/api/v1/orders \
 For comprehensive exercises, database interactions, caching strategies, and advanced challenges:
 
 📘 **[See LAB_07_MICROSERVICES.md](./LAB_07_MICROSERVICES.md)**
+
+---
+
+## Lab 8: Distributed Tracing with Jaeger
+
+This lab introduces distributed tracing to visualize and debug request flows across your microservices.
+
+### Overview
+
+**Jaeger** provides:
+- End-to-end request tracing across all services
+- Performance bottleneck identification
+- Service dependency visualization
+- Error propagation tracking
+
+### Access Jaeger UI
+
+Open your browser: **http://localhost:16686**
+
+### Quick Start
+
+```bash
+# Generate traces by making requests
+curl -k https://localhost/api/v1/users
+curl -k https://localhost/api/v1/products
+curl -k https://localhost/api/v1/orders
+
+# View traces in Jaeger UI
+# 1. Select a service (user-service, product-service, or order-service)
+# 2. Click "Find Traces"
+# 3. Click on any trace to view details
+```
+
+### Key Features
+
+- **Trace Timeline**: See request duration and span relationships
+- **Service Graph**: Visualize service dependencies
+- **Performance Analysis**: Compare cached vs uncached requests
+- **Error Tracking**: Debug failed requests with full context
+
+### Detailed Documentation
+
+For comprehensive tracing exercises, performance analysis, and debugging techniques:
+
+📘 **[See LAB_08_DISTRIBUTED_TRACING.md](./LAB_08_DISTRIBUTED_TRACING.md)**
 
 ---
 
